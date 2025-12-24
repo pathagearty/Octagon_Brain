@@ -1,0 +1,78 @@
+# SkateFormer Training Configuration for BoxingVI
+# Optimized for GTX 1650 (4GB VRAM)
+
+# Model configuration
+model:
+  name: skateformer
+  num_classes: 6
+  num_joints: 17
+  num_frames: 64
+  in_channels: 2
+  embed_dim: 64
+  num_blocks: 8
+  num_heads: 8
+  ffn_expansion: 4
+  dropout: 0.1
+  temporal_kernel: 7
+
+# Dataset configuration
+dataset:
+  name: boxingvi
+  root_dir: data/boxingvi
+  target_frames: 64
+  normalize: true
+  augment: true
+
+# Training configuration
+training:
+  epochs: 100
+  batch_size: 8          # Small for 4GB VRAM
+  gradient_accumulation: 4  # Effective batch size 32
+  num_workers: 4
+  pin_memory: true
+
+# Optimizer configuration
+optimizer:
+  type: AdamW
+  lr: 0.0005
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+# Learning rate scheduler
+scheduler:
+  type: cosine
+  warmup_epochs: 5
+  min_lr: 0.00001
+
+# Mixed precision training
+mixed_precision: true
+
+# Checkpointing
+checkpoint:
+  save_dir: checkpoints/skateformer_boxing
+  save_best: true
+  save_last: true
+  save_every: 10  # Save checkpoint every N epochs
+
+# Logging
+logging:
+  tensorboard: true
+  log_dir: logs/skateformer_boxing
+  log_every: 50  # Log every N steps
+
+# Early stopping
+early_stopping:
+  enabled: true
+  patience: 15
+  min_delta: 0.001
+  monitor: val_accuracy
+
+# Validation
+validation:
+  eval_every: 1  # Evaluate every N epochs
+
+# Random seed for reproducibility
+seed: 42
+
+# Device configuration
+device: auto  # auto, cuda, or cpu
