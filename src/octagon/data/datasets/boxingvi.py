@@ -241,9 +241,19 @@ class BoxingVIDataset(BaseSkeletonDataset):
             try:
                 df = pd.read_excel(annotation_path)
 
-                # Expected columns: start_frame, end_frame, punch_class
+                # Find the class column - handle different naming conventions
+                class_col = None
+                for col_name in ["Class", "class", "punch_class", "action", "label"]:
+                    if col_name in df.columns:
+                        class_col = col_name
+                        break
+
+                if class_col is None:
+                    print(f"Warning: No class column found in {annotation_path}. Columns: {list(df.columns)}")
+                    class_col = df.columns[2] if len(df.columns) > 2 else df.columns[0]
+
                 for i in range(min(len(df), num_clips)):
-                    punch_class = str(df.iloc[i].get("punch_class", "")).lower().strip()
+                    punch_class = str(df.iloc[i].get(class_col, "")).lower().strip()
                     punch_class = punch_class.replace(" ", "_")
 
                     if punch_class in BOXINGVI_CLASSES:
