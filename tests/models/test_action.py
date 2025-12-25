@@ -101,7 +101,7 @@ class TestSkateFormer:
         assert model.num_classes == 6
         assert model.num_points == 17
         assert model.num_frames == 64
-        assert model.embed_dim == 64
+        assert model.embed_dim == 96  # Matches pretrained weights
 
     def test_custom_parameters(self):
         """Test SkateFormer with custom parameters."""
@@ -155,16 +155,16 @@ class TestSkateFormer:
     def test_parameter_count(self):
         """Test model has reasonable parameter count.
 
-        The official SkateFormer architecture is larger (~3M parameters)
-        due to 4 stages with multi-head attention.
+        The official SkateFormer architecture is ~3.2M parameters
+        with embed_dim=96 (matching pretrained weights).
         """
         config = SkateFormerConfig.coco_17_boxing(num_classes=6)
         model = SkateFormer(config)
         num_params = model.get_num_params()
 
-        # Official architecture is ~3M parameters
+        # Official architecture is ~3.2M parameters with embed_dim=96
         assert num_params < 5_000_000
-        assert num_params > 2_000_000
+        assert num_params > 3_000_000
 
     def test_gradient_flow(self):
         """Test that gradients flow through the model."""

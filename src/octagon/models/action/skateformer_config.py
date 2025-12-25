@@ -82,7 +82,7 @@ class SkateFormerConfig:
     def ntu60_xsub_joint(cls) -> "SkateFormerConfig":
         """NTU RGB+D 60 Cross-Subject Joint configuration.
 
-        This matches the pretrained weights from KAIST.
+        This matches the pretrained weights from KAIST (SkateFormer_j.pt).
         """
         return cls(
             num_classes=60,
@@ -90,7 +90,7 @@ class SkateFormerConfig:
             num_people=2,
             num_frames=64,
             in_channels=3,
-            embed_dim=64,
+            embed_dim=96,  # Actual pretrained dimension (was incorrectly 64)
             depths=(2, 2, 2, 2),
             channels=(96, 192, 192, 192),
             num_heads=32,
@@ -118,6 +118,7 @@ class SkateFormerConfig:
         """COCO 17 keypoints configuration for combat sports.
 
         Adapted for 2D pose estimation output (x, y only).
+        Uses embed_dim=96 to match NTU pretrained weights for transfer learning.
 
         Args:
             num_classes: Number of action classes (default 6 for boxing).
@@ -131,7 +132,7 @@ class SkateFormerConfig:
             num_people=1,
             num_frames=64,
             in_channels=2,  # x, y only (no depth)
-            embed_dim=64,
+            embed_dim=96,  # Match pretrained weights (was 64)
             depths=(2, 2, 2, 2),
             channels=(96, 192, 192, 192),
             num_heads=32,
