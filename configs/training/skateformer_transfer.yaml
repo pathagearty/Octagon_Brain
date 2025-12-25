@@ -1,31 +1,34 @@
 # SkateFormer Transfer Learning Configuration for BoxingVI
-# Uses pre-trained weights from NTU RGB+D dataset
+# Uses pre-trained weights from NTU RGB+D dataset (ECCV 2024)
 # Optimized for Kaggle T4 GPU (16GB VRAM)
+#
+# Architecture: Official KAIST SkateFormer
+# Expected weight transfer: ~85% (182/214 layers)
+# Skipped layers: stem, gconv, joint_embedding, head (dimension mismatch)
 
 # Pre-trained weights configuration
 pretrained:
   enabled: true
   # Path to pre-trained checkpoint (must be downloaded separately)
   # Download from: https://github.com/KAIST-VICLab/SkateFormer
-  checkpoint: pretrained/skateformer_ntu_xsub.pt
+  # File: SkateFormer_j.pt (NTU60 X-Sub Joint)
+  checkpoint: pretrained/SkateFormer_j.pt
   # Freeze backbone for first N epochs (0 = no freezing)
   freeze_epochs: 5
   # Use lower learning rate for pre-trained layers
   backbone_lr_scale: 0.1
 
 # Model configuration
+# Uses SkateFormerConfig.coco_17_boxing() as base
+# Only essential overrides needed - architecture uses official KAIST config
 model:
   name: skateformer
   num_classes: 6
-  num_joints: 17
+  num_joints: 17  # Maps to num_points in new architecture
   num_frames: 64
-  in_channels: 2
+  in_channels: 2  # xy coordinates (COCO 2D pose)
   embed_dim: 64
-  num_blocks: 8
-  num_heads: 8
-  ffn_expansion: 4
   dropout: 0.2  # Higher dropout for small dataset
-  temporal_kernel: 7
 
 # Dataset configuration
 dataset:

@@ -38,7 +38,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from octagon.data import BoxingVIDataset
-from octagon.models.action import SkateFormer
+from octagon.models.action import SkateFormer, SkateFormerConfig
 
 
 def load_config(config_path: Path) -> dict:
@@ -108,6 +108,9 @@ def create_dataloaders(config: dict) -> tuple[DataLoader, DataLoader]:
 def create_model(config: dict, device: torch.device) -> tuple[nn.Module, bool]:
     """Create SkateFormer model, optionally with pre-trained weights.
 
+    Uses the official KAIST SkateFormer architecture which supports
+    transfer learning from NTU RGB+D pretrained weights.
+
     Returns:
         Tuple of (model, uses_pretrained) where uses_pretrained indicates
         if pre-trained weights were loaded successfully.
@@ -115,6 +118,25 @@ def create_model(config: dict, device: torch.device) -> tuple[nn.Module, bool]:
     model_config = config["model"]
     pretrained_config = config.get("pretrained", {})
     uses_pretrained = False
+
+    # Create base configuration for COCO 17-keypoint boxing
+    # Note: num_joints in config maps to num_points in the new architecture
+    model_cfg = SkateFormerConfig.coco_17_boxing(
+        num_classes=model_config["num_classes"]
+    )
+
+    # Override config values if specified
+    if "num_joints" in model_config:
+        model_cfg.num_points = model_config["num_joints"]
+    if "num_frames" in model_config:
+        model_cfg.num_frames = model_config["num_frames"]
+    if "in_channels" in model_config:
+        model_cfg.in_channels = model_config["in_channels"]
+    if "embed_dim" in model_config:
+        model_cfg.embed_dim = model_config["embed_dim"]
+    if "dropout" in model_config:
+        model_cfg.drop = model_config["dropout"]
+        model_cfg.attn_drop = model_config["dropout"]
 
     # Check if we should load pre-trained weights
     if pretrained_config.get("enabled", False):
@@ -134,54 +156,43 @@ def create_model(config: dict, device: torch.device) -> tuple[nn.Module, bool]:
                 break
 
         if found_path:
-            print(f"\nLoading pre-trained weights from: {found_path}")
+            print(f"\n{'='*60}")
+            print("TRANSFER LEARNING MODE")
+            print(f"{'='*60}")
+            print(f"Loading pre-trained weights from: {found_path}")
+
+            # Use from_pretrained for transfer learning
             model = SkateFormer.from_pretrained(
                 pretrained_path=found_path,
-                num_classes=model_config["num_classes"],
-                num_joints=model_config["num_joints"],
-                num_frames=model_config["num_frames"],
-                in_channels=model_config["in_channels"],
+                num_classes=model_cfg.num_classes,
+                num_points=model_cfg.num_points,
+                num_frames=model_cfg.num_frames,
+                in_channels=model_cfg.in_channels,
                 freeze_backbone=False,  # We'll handle freezing separately
                 verbose=True,
             )
             uses_pretrained = True
         else:
-            print(f"\nWarning: Pre-trained weights not found at {pretrained_path}")
-            print("Training from scratch instead.")
-            model = SkateFormer(
-                num_classes=model_config["num_classes"],
-                num_joints=model_config["num_joints"],
-                num_frames=model_config["num_frames"],
-                in_channels=model_config["in_channels"],
-                embed_dim=model_config["embed_dim"],
-                num_blocks=model_config["num_blocks"],
-                num_heads=model_config["num_heads"],
-                ffn_expansion=model_config["ffn_expansion"],
-                dropout=model_config["dropout"],
-                temporal_kernel=model_config["temporal_kernel"],
-            )
+            print(f"\n{'='*60}")
+            print("TRAINING FROM SCRATCH")
+            print(f"{'='*60}")
+            print(f"Warning: Pre-trained weights not found at {pretrained_path}")
+            model = SkateFormer(model_cfg)
     else:
-        model = SkateFormer(
-            num_classes=model_config["num_classes"],
-            num_joints=model_config["num_joints"],
-            num_frames=model_config["num_frames"],
-            in_channels=model_config["in_channels"],
-            embed_dim=model_config["embed_dim"],
-            num_blocks=model_config["num_blocks"],
-            num_heads=model_config["num_heads"],
-            ffn_expansion=model_config["ffn_expansion"],
-            dropout=model_config["dropout"],
-            temporal_kernel=model_config["temporal_kernel"],
-        )
+        print(f"\n{'='*60}")
+        print("TRAINING FROM SCRATCH (no pretrained config)")
+        print(f"{'='*60}")
+        model = SkateFormer(model_cfg)
 
     model = model.to(device)
     return model, uses_pretrained
 
 
 def freeze_backbone(model: nn.Module) -> None:
-    """Freeze all layers except classifier."""
+    """Freeze all layers except the classification head."""
     for name, param in model.named_parameters():
-        if "classifier" not in name:
+        # Keep head trainable, freeze everything else
+        if "head" not in name:
             param.requires_grad = False
 
 
@@ -199,7 +210,7 @@ def create_optimizer(
     """Create optimizer with optional differential learning rates.
 
     For transfer learning, uses lower LR for pre-trained backbone layers
-    and higher LR for the new classifier head.
+    and higher LR for the new classification head.
     """
     opt_config = config["optimizer"]
     pretrained_config = config.get("pretrained", {})
@@ -210,21 +221,21 @@ def create_optimizer(
     if uses_pretrained and pretrained_config.get("backbone_lr_scale", 1.0) != 1.0:
         backbone_lr_scale = pretrained_config["backbone_lr_scale"]
 
-        # Separate parameters into backbone and classifier
+        # Separate parameters into backbone and head
         backbone_params = []
-        classifier_params = []
+        head_params = []
 
         for name, param in model.named_parameters():
-            if "classifier" in name:
-                classifier_params.append(param)
+            if "head" in name:
+                head_params.append(param)
             else:
                 backbone_params.append(param)
 
         param_groups = [
             {"params": backbone_params, "lr": base_lr * backbone_lr_scale},
-            {"params": classifier_params, "lr": base_lr},
+            {"params": head_params, "lr": base_lr},
         ]
-        print(f"Using differential LR: backbone={base_lr * backbone_lr_scale:.6f}, classifier={base_lr:.6f}")
+        print(f"Using differential LR: backbone={base_lr * backbone_lr_scale:.6f}, head={base_lr:.6f}")
     else:
         param_groups = model.parameters()
 
