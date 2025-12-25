@@ -519,6 +519,150 @@ class SkateFormer(nn.Module):
         """Return total number of parameters."""
         return sum(p.numel() for p in self.parameters())
 
+    def load_pretrained(
+        self,
+        pretrained_path: str | Path,
+        strict: bool = False,
+        verbose: bool = True,
+    ) -> dict:
+        """Load pre-trained weights with partial matching.
+
+        Handles dimension mismatches between pre-trained model (NTU RGB+D: 25 joints, 3D)
+        and this model (COCO: 17 joints, 2D). Loads compatible layers and skips incompatible ones.
+
+        Args:
+            pretrained_path: Path to pre-trained checkpoint file.
+            strict: If True, raises error on mismatches. If False, skips mismatched layers.
+            verbose: If True, prints loading details.
+
+        Returns:
+            Dictionary with 'loaded', 'skipped', and 'missing' layer names.
+        """
+        pretrained_path = Path(pretrained_path)
+        if not pretrained_path.exists():
+            raise FileNotFoundError(f"Pre-trained weights not found: {pretrained_path}")
+
+        # Load checkpoint
+        checkpoint = torch.load(pretrained_path, map_location="cpu", weights_only=False)
+
+        # Handle different checkpoint formats
+        if "model" in checkpoint:
+            pretrained_dict = checkpoint["model"]
+        elif "state_dict" in checkpoint:
+            pretrained_dict = checkpoint["state_dict"]
+        elif "model_state_dict" in checkpoint:
+            pretrained_dict = checkpoint["model_state_dict"]
+        else:
+            pretrained_dict = checkpoint
+
+        # Clean up key names (remove 'module.' prefix if present from DataParallel)
+        pretrained_dict = {
+            k.replace("module.", ""): v for k, v in pretrained_dict.items()
+        }
+
+        model_dict = self.state_dict()
+
+        # Track what we load/skip
+        loaded_keys = []
+        skipped_keys = []
+        missing_keys = []
+
+        # Try to match each pre-trained weight
+        for key, pretrained_value in pretrained_dict.items():
+            if key in model_dict:
+                model_value = model_dict[key]
+                if pretrained_value.shape == model_value.shape:
+                    model_dict[key] = pretrained_value
+                    loaded_keys.append(key)
+                else:
+                    skipped_keys.append(f"{key} (shape mismatch: {pretrained_value.shape} vs {model_value.shape})")
+            else:
+                skipped_keys.append(f"{key} (not in model)")
+
+        # Check for missing keys
+        for key in model_dict.keys():
+            if key not in pretrained_dict and key not in [k.split(" ")[0] for k in skipped_keys]:
+                missing_keys.append(key)
+
+        # Load the matched weights
+        self.load_state_dict(model_dict, strict=False)
+
+        if verbose:
+            print(f"\n{'='*50}")
+            print("Pre-trained Weight Loading Summary")
+            print(f"{'='*50}")
+            print(f"Loaded: {len(loaded_keys)} layers")
+            print(f"Skipped: {len(skipped_keys)} layers (dimension mismatch)")
+            print(f"Missing: {len(missing_keys)} layers (randomly initialized)")
+
+            if skipped_keys and verbose:
+                print(f"\nSkipped layers (expected for different skeleton format):")
+                for key in skipped_keys[:10]:
+                    print(f"  - {key}")
+                if len(skipped_keys) > 10:
+                    print(f"  ... and {len(skipped_keys) - 10} more")
+
+        return {
+            "loaded": loaded_keys,
+            "skipped": skipped_keys,
+            "missing": missing_keys,
+        }
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_path: str | Path,
+        num_classes: int = 6,
+        num_joints: int = 17,
+        num_frames: int = 64,
+        in_channels: int = 2,
+        freeze_backbone: bool = False,
+        verbose: bool = True,
+    ) -> "SkateFormer":
+        """Create model and load pre-trained weights for transfer learning.
+
+        Args:
+            pretrained_path: Path to pre-trained checkpoint.
+            num_classes: Number of output classes for new task.
+            num_joints: Number of skeleton joints (17 for COCO).
+            num_frames: Number of input frames.
+            in_channels: Number of input channels (2 for 2D).
+            freeze_backbone: If True, freeze all layers except classifier.
+            verbose: Print loading details.
+
+        Returns:
+            SkateFormer model with pre-trained weights loaded.
+
+        Example:
+            >>> model = SkateFormer.from_pretrained(
+            ...     'pretrained/ntu_xsub.pt',
+            ...     num_classes=6,  # Boxing classes
+            ...     freeze_backbone=False,
+            ... )
+        """
+        # Create model with target configuration
+        model = cls(
+            num_classes=num_classes,
+            num_joints=num_joints,
+            num_frames=num_frames,
+            in_channels=in_channels,
+        )
+
+        # Load pre-trained weights (partial matching)
+        result = model.load_pretrained(pretrained_path, verbose=verbose)
+
+        # Optionally freeze backbone (everything except classifier)
+        if freeze_backbone:
+            for name, param in model.named_parameters():
+                if "classifier" not in name:
+                    param.requires_grad = False
+            if verbose:
+                trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                total = sum(p.numel() for p in model.parameters())
+                print(f"\nFroze backbone: {trainable:,} / {total:,} params trainable")
+
+        return model
+
 
 class SkateFormerWrapper(BaseActionRecognizer):
     """Inference wrapper for SkateFormer model.

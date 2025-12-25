@@ -1,0 +1,90 @@
+# SkateFormer Transfer Learning Configuration for BoxingVI
+# Uses pre-trained weights from NTU RGB+D dataset
+# Optimized for Kaggle T4 GPU (16GB VRAM)
+
+# Pre-trained weights configuration
+pretrained:
+  enabled: true
+  # Path to pre-trained checkpoint (must be downloaded separately)
+  # Download from: https://github.com/KAIST-VICLab/SkateFormer
+  checkpoint: pretrained/skateformer_ntu_xsub.pt
+  # Freeze backbone for first N epochs (0 = no freezing)
+  freeze_epochs: 5
+  # Use lower learning rate for pre-trained layers
+  backbone_lr_scale: 0.1
+
+# Model configuration
+model:
+  name: skateformer
+  num_classes: 6
+  num_joints: 17
+  num_frames: 64
+  in_channels: 2
+  embed_dim: 64
+  num_blocks: 8
+  num_heads: 8
+  ffn_expansion: 4
+  dropout: 0.2  # Higher dropout for small dataset
+  temporal_kernel: 7
+
+# Dataset configuration
+dataset:
+  name: boxingvi
+  root_dir: data/boxingvi
+  target_frames: 64
+  normalize: true
+  augment: true
+
+# Training configuration - optimized for transfer learning
+training:
+  epochs: 50  # Fewer epochs needed with pre-training
+  batch_size: 32  # Larger batch for T4 GPU
+  gradient_accumulation: 2  # Effective batch size 64
+  num_workers: 2  # Kaggle has limited workers
+  pin_memory: true
+
+# Optimizer configuration - lower LR for fine-tuning
+optimizer:
+  type: AdamW
+  lr: 0.0001  # Lower LR for fine-tuning
+  weight_decay: 0.05  # Higher regularization for small dataset
+  betas: [0.9, 0.999]
+
+# Learning rate scheduler
+scheduler:
+  type: cosine
+  warmup_epochs: 3
+  min_lr: 0.000001
+
+# Mixed precision training
+mixed_precision: true
+
+# Checkpointing
+checkpoint:
+  save_dir: checkpoints/skateformer_transfer
+  save_best: true
+  save_last: true
+  save_every: 10
+
+# Logging
+logging:
+  tensorboard: true
+  log_dir: logs/skateformer_transfer
+  log_every: 20
+
+# Early stopping
+early_stopping:
+  enabled: true
+  patience: 10
+  min_delta: 0.001
+  monitor: val_accuracy
+
+# Validation
+validation:
+  eval_every: 1
+
+# Random seed for reproducibility
+seed: 42
+
+# Device configuration
+device: auto

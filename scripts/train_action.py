@@ -105,42 +105,140 @@ def create_dataloaders(config: dict) -> tuple[DataLoader, DataLoader]:
     return train_loader, val_loader
 
 
-def create_model(config: dict, device: torch.device) -> nn.Module:
-    """Create SkateFormer model."""
-    model_config = config["model"]
+def create_model(config: dict, device: torch.device) -> tuple[nn.Module, bool]:
+    """Create SkateFormer model, optionally with pre-trained weights.
 
-    model = SkateFormer(
-        num_classes=model_config["num_classes"],
-        num_joints=model_config["num_joints"],
-        num_frames=model_config["num_frames"],
-        in_channels=model_config["in_channels"],
-        embed_dim=model_config["embed_dim"],
-        num_blocks=model_config["num_blocks"],
-        num_heads=model_config["num_heads"],
-        ffn_expansion=model_config["ffn_expansion"],
-        dropout=model_config["dropout"],
-        temporal_kernel=model_config["temporal_kernel"],
-    )
+    Returns:
+        Tuple of (model, uses_pretrained) where uses_pretrained indicates
+        if pre-trained weights were loaded successfully.
+    """
+    model_config = config["model"]
+    pretrained_config = config.get("pretrained", {})
+    uses_pretrained = False
+
+    # Check if we should load pre-trained weights
+    if pretrained_config.get("enabled", False):
+        pretrained_path = Path(pretrained_config.get("checkpoint", ""))
+
+        # Try multiple locations for the checkpoint
+        possible_paths = [
+            pretrained_path,
+            project_root / pretrained_path,
+            Path.cwd() / pretrained_path,
+        ]
+
+        found_path = None
+        for p in possible_paths:
+            if p.exists():
+                found_path = p
+                break
+
+        if found_path:
+            print(f"\nLoading pre-trained weights from: {found_path}")
+            model = SkateFormer.from_pretrained(
+                pretrained_path=found_path,
+                num_classes=model_config["num_classes"],
+                num_joints=model_config["num_joints"],
+                num_frames=model_config["num_frames"],
+                in_channels=model_config["in_channels"],
+                freeze_backbone=False,  # We'll handle freezing separately
+                verbose=True,
+            )
+            uses_pretrained = True
+        else:
+            print(f"\nWarning: Pre-trained weights not found at {pretrained_path}")
+            print("Training from scratch instead.")
+            model = SkateFormer(
+                num_classes=model_config["num_classes"],
+                num_joints=model_config["num_joints"],
+                num_frames=model_config["num_frames"],
+                in_channels=model_config["in_channels"],
+                embed_dim=model_config["embed_dim"],
+                num_blocks=model_config["num_blocks"],
+                num_heads=model_config["num_heads"],
+                ffn_expansion=model_config["ffn_expansion"],
+                dropout=model_config["dropout"],
+                temporal_kernel=model_config["temporal_kernel"],
+            )
+    else:
+        model = SkateFormer(
+            num_classes=model_config["num_classes"],
+            num_joints=model_config["num_joints"],
+            num_frames=model_config["num_frames"],
+            in_channels=model_config["in_channels"],
+            embed_dim=model_config["embed_dim"],
+            num_blocks=model_config["num_blocks"],
+            num_heads=model_config["num_heads"],
+            ffn_expansion=model_config["ffn_expansion"],
+            dropout=model_config["dropout"],
+            temporal_kernel=model_config["temporal_kernel"],
+        )
 
     model = model.to(device)
-    return model
+    return model, uses_pretrained
 
 
-def create_optimizer(model: nn.Module, config: dict) -> torch.optim.Optimizer:
-    """Create optimizer."""
+def freeze_backbone(model: nn.Module) -> None:
+    """Freeze all layers except classifier."""
+    for name, param in model.named_parameters():
+        if "classifier" not in name:
+            param.requires_grad = False
+
+
+def unfreeze_backbone(model: nn.Module) -> None:
+    """Unfreeze all layers."""
+    for param in model.parameters():
+        param.requires_grad = True
+
+
+def create_optimizer(
+    model: nn.Module,
+    config: dict,
+    uses_pretrained: bool = False,
+) -> torch.optim.Optimizer:
+    """Create optimizer with optional differential learning rates.
+
+    For transfer learning, uses lower LR for pre-trained backbone layers
+    and higher LR for the new classifier head.
+    """
     opt_config = config["optimizer"]
+    pretrained_config = config.get("pretrained", {})
+
+    base_lr = opt_config["lr"]
+
+    # Use differential learning rates for transfer learning
+    if uses_pretrained and pretrained_config.get("backbone_lr_scale", 1.0) != 1.0:
+        backbone_lr_scale = pretrained_config["backbone_lr_scale"]
+
+        # Separate parameters into backbone and classifier
+        backbone_params = []
+        classifier_params = []
+
+        for name, param in model.named_parameters():
+            if "classifier" in name:
+                classifier_params.append(param)
+            else:
+                backbone_params.append(param)
+
+        param_groups = [
+            {"params": backbone_params, "lr": base_lr * backbone_lr_scale},
+            {"params": classifier_params, "lr": base_lr},
+        ]
+        print(f"Using differential LR: backbone={base_lr * backbone_lr_scale:.6f}, classifier={base_lr:.6f}")
+    else:
+        param_groups = model.parameters()
 
     if opt_config["type"].lower() == "adamw":
         optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=opt_config["lr"],
+            param_groups,
+            lr=base_lr,
             weight_decay=opt_config["weight_decay"],
             betas=tuple(opt_config["betas"]),
         )
     elif opt_config["type"].lower() == "sgd":
         optimizer = torch.optim.SGD(
-            model.parameters(),
-            lr=opt_config["lr"],
+            param_groups,
+            lr=base_lr,
             weight_decay=opt_config["weight_decay"],
             momentum=opt_config.get("momentum", 0.9),
         )
@@ -388,12 +486,22 @@ def main():
 
     # Create model
     print("Creating model...")
-    model = create_model(config, device)
+    model, uses_pretrained = create_model(config, device)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {num_params:,}")
 
+    # Handle initial backbone freezing for transfer learning
+    pretrained_config = config.get("pretrained", {})
+    freeze_epochs = pretrained_config.get("freeze_epochs", 0) if uses_pretrained else 0
+
+    if freeze_epochs > 0:
+        freeze_backbone(model)
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Backbone frozen for first {freeze_epochs} epochs")
+        print(f"Trainable parameters: {trainable:,}")
+
     # Create optimizer and scheduler
-    optimizer = create_optimizer(model, config)
+    optimizer = create_optimizer(model, config, uses_pretrained)
     steps_per_epoch = len(train_loader) // config["training"]["gradient_accumulation"]
     scheduler = create_scheduler(optimizer, config, steps_per_epoch)
 
@@ -443,6 +551,22 @@ def main():
 
     for epoch in range(start_epoch, config["training"]["epochs"]):
         epoch_start = time.time()
+
+        # Unfreeze backbone after freeze_epochs
+        if freeze_epochs > 0 and epoch == freeze_epochs:
+            print(f"\n{'='*50}")
+            print(f"Unfreezing backbone at epoch {epoch + 1}")
+            print(f"{'='*50}")
+            unfreeze_backbone(model)
+
+            # Recreate optimizer with all parameters trainable
+            optimizer = create_optimizer(model, config, uses_pretrained)
+            steps_per_epoch = len(train_loader) // config["training"]["gradient_accumulation"]
+            scheduler = create_scheduler(optimizer, config, steps_per_epoch)
+            scaler = GradScaler(enabled=config["mixed_precision"])
+
+            trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(f"Trainable parameters: {trainable:,}\n")
 
         # Train
         train_loss, train_acc, global_step = train_one_epoch(
